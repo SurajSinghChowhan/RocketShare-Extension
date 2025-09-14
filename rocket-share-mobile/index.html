@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rocket Share</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #6e8efb, #a777e3);
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+        }
+        .container { padding: 20px; max-width: 90%; }
+        h1 { font-size: 2em; }
+        .session-id {
+            background-color: rgba(255, 255, 255, 0.2);
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            word-wrap: break-word;
+            margin-top: 10px;
+        }
+        .button {
+            background-color: #ffffff; color: #6e8efb; border: none;
+            border-radius: 12px; padding: 16px 32px; font-size: 1.2em;
+            font-weight: 600; cursor: pointer; margin-top: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1); transition: transform 0.2s;
+        }
+        .button:hover { transform: translateY(-2px); }
+    </style>
+</head>
+<body>
+    <div class="container" id="container">
+        <h1>🚀 Rocket Share</h1>
+        <p>Connecting to session...</p>
+        <div class="session-id" id="sessionIdContainer">...</div>
+    </div>
+
+    <input type="file" id="fileInput" accept="image/*,video/*" style="display: none;">
+
+    <script>
+        let dataChannel; // Keep dataChannel in a broader scope
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const sessionIdContainer = document.getElementById('sessionIdContainer');
+            const params = new URLSearchParams(window.location.search);
+            const sessionId = params.get('sessionId');
+            
+            if (sessionId) {
+                sessionIdContainer.textContent = sessionId;
+                connectToSignaling(sessionId);
+            } else {
+                sessionIdContainer.textContent = 'Error: No Session ID found.';
+            }
+        });
+
+        function connectToSignaling(sessionId) {
+            // --- THIS IS THE LINE YOU NEED TO UPDATE ---
+            const ipAddress = '192.168.0.8'; // UPDATE THIS WITH YOUR CURRENT IP
+            
+            const signalingServerUrl = `ws://${ipAddress}:8080`;
+            const ws = new WebSocket(signalingServerUrl);
+            let peerConnection;
+            
+            const configuration = {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    {
+                        urls: 'turn:openrelay.metered.ca:80',
+                        username: 'openrelayproject',
+                        credential: 'openrelayproject'
+                    }
+                ]
+            };
+            
+            ws.onopen = () => {
+                console.log('Mobile: Connected to signaling server.');
+                ws.send(JSON.stringify({ type: 'join', sessionId }));
+            };
+
+            ws.onmessage = async (message) => {
+                const data = JSON.parse(message.data);
+                
+                if (data.type === 'peer-joined') {
+                    console.log('Mobile: Peer has joined. Waiting for offer.');
+                } else if (data.type === 'offer') {
+                    peerConnection = new RTCPeerConnection(configuration);
+                    
+                    peerConnection.ondatachannel = (event) => {
+                        dataChannel = event.channel;
+                        dataChannel.onopen = () => console.log("Mobile: Data channel OPEN");
+                        dataChannel.onclose = () => console.log("Mobile: Data channel CLOSED");
+                    };
+
+                    peerConnection.onicecandidate = (event) => {
+                        if (event.candidate) {
+                            ws.send(JSON.stringify({ type: 'candidate', candidate: event.candidate, sessionId }));
+                        }
+                    };
+
+                    peerConnection.onconnectionstatechange = () => {
+                         if (peerConnection.connectionState === 'connected') {
+                            console.log('Mobile: Peers connected successfully!');
+                            displayFileSelectUI();
+                         }
+                    };
+
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    ws.send(JSON.stringify({ type: 'answer', answer: peerConnection.localDescription, sessionId }));
+                } else if (data.type === 'candidate') {
+                    if (peerConnection) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    }
+                }
+            };
+        }
+
+        function displayFileSelectUI() {
+            const container = document.getElementById('container');
+            const fileInput = document.getElementById('fileInput');
+            container.innerHTML = `
+                <h1>🚀 Connected!</h1>
+                <p>Select a file to send to your desktop.</p>
+                <button class="button" id="selectFileButton">Select Media File</button>
+            `;
+
+            document.getElementById('selectFileButton').addEventListener('click', () => {
+                fileInput.click();
+            });
+
+            fileInput.addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (file) {
+                    container.innerHTML = `<h1>Sending...</h1><p>${file.name}</p><div id="progressText">0%</div>`;
+                    sendFile(file);
+                }
+            });
+        }
+
+        function sendFile(file) {
+            if (!dataChannel || dataChannel.readyState !== 'open') {
+                console.error("Data channel is not open."); return;
+            }
+
+            const CHUNK_SIZE = 16384;
+            let offset = 0;
+            const progressText = document.getElementById('progressText');
+
+            dataChannel.send(JSON.stringify({ type: 'metadata', name: file.name, size: file.size }));
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                dataChannel.send(e.target.result);
+                offset += e.target.result.byteLength;
+                
+                const progress = Math.round((offset / file.size) * 100);
+                if (progressText) progressText.textContent = `${progress}%`;
+
+                if (offset < file.size) {
+                    readSlice(offset);
+                } else {
+                    document.getElementById('container').innerHTML = '<h1>✔️ File Sent!</h1><p>You can close this page.</p>';
+                }
+            };
+            
+            const readSlice = o => {
+                const slice = file.slice(offset, o + CHUNK_SIZE);
+                reader.readAsArrayBuffer(slice);
+            };
+            readSlice(0);
+        }
+    </script>
+</body>
+</html>
+

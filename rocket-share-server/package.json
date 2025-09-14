@@ -1,0 +1,12 @@
+{
+  "name": "rocket-share-server",
+  "version": "1.0.0",
+  "description": "A minimal signaling server for Rocket Share.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.13.0"
+  }
+}
