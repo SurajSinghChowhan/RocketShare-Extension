@@ -6,8 +6,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const scanText = document.getElementById('scan-text');
     const statusText = document.getElementById('status-text');
     const receivingFilesList = document.getElementById('receiving-files-list');
-    const downloadArea = document.getElementById('download-area');
     const reloadIcon = document.getElementById('reload-icon');
+    const saveButton = document.getElementById('save-button'); // <-- Your "Save All" button
 
     // --- IMPORTANT: Double-check your computer's current IP address ---
     const ipAddress = '192.168.0.4'; // UPDATE THIS IF IT CHANGES
@@ -22,7 +22,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let peerConnection;
     let dataChannel;
     let isConnected = false;
-    const fileStates = {}; // status: 'receiving' | 'complete' | 'downloaded'
+    const fileStates = {}; // status: 'receiving' | 'complete' | 'zipped'
 
     const configuration = {
         iceServers: [
@@ -50,7 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
     }
     
-    // --- WEBSOCKET & WEBRTC LOGIC (MOVED FROM SERVICE WORKER) ---
+    // --- WEBSOCKET & WEBRTC LOGIC ---
     const ws = new WebSocket(signalingServerUrl);
     
     ws.onopen = () => {
@@ -88,7 +88,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         receivedSize: 0,
                         status: 'receiving',
                         progress: 0,
-                        url: null // Will store the final ObjectURL here
+                        blob: null // Will store the final blob here
                     };
                     updateUI(); 
                 }
@@ -105,10 +105,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     fileState.progress = Math.round((fileState.receivedSize / fileState.metadata.size) * 100);
 
                     if (fileState.receivedSize >= fileState.metadata.size) {
-                        const fileBlob = new Blob(fileState.chunks);
+                        // --- THIS IS THE FIX ---
+                        // Store the raw blob directly. Do not create a URL.
+                        fileState.blob = new Blob(fileState.chunks); 
                         fileState.status = 'complete'; 
-                        fileState.url = URL.createObjectURL(fileBlob); // Create and store the URL
-                        fileState.chunks = []; 
+                        fileState.chunks = []; // Clear chunks from memory
                     }
                     updateUI(); 
                 }
@@ -143,10 +144,9 @@ document.addEventListener('DOMContentLoaded', () => {
             });
     }
 
-    // --- UI Rendering Function ---
+    // --- UI Rendering Function (Matches your screenshot) ---
     function updateUI() {
         receivingFilesList.innerHTML = '';
-        downloadArea.innerHTML = ''; // Clear both lists
 
         let isReceiving = false;
         let hasFiles = Object.keys(fileStates).length > 0;
@@ -164,82 +164,119 @@ document.addEventListener('DOMContentLoaded', () => {
                 `;
                 receivingFilesList.appendChild(item);
             } 
-            else if (file.status === 'complete') {
+            else if (file.status === 'complete' || file.status === 'zipped') {
+                // Show 100% for completed files (as requested)
                 item.innerHTML = `
                     <span class="file-name">${fileName}</span>
-                    <a class="download-link" data-filename="${fileName}" href="${file.url}" download="${fileName}">
-                        <img src="icons/download_icon.png" alt="Download" class="downloaded-icon">
-                    </a>
+                    <span class="file-status">100%</span>
                 `;
-                downloadArea.appendChild(item); // Add to the download list
-            }
-            else if (file.status === 'downloaded') {
-                item.innerHTML = `
-                    <span class="file-name">${fileName}</span>
-                    <span class="file-status"><img src="icons/green_checkmark.png" alt="Downloaded" class="downloaded-icon"></span>
-                `;
-                downloadArea.appendChild(item); // Add to the download list
+                receivingFilesList.appendChild(item);
             }
         }
         
-        // --- Update main status text and visibility based on what's happening ---
         if (isReceiving) {
             // --- STATE 2: RECEIVING ---
             scanText.style.display = 'none';
             receivingFilesList.style.display = 'block';
-            downloadArea.style.display = 'block'; // Show completed files too
             qrWrapper.style.display = 'block'; 
             qrCodeContainer.classList.add('blurred');
             reloadIcon.style.display = 'block'; 
-            statusText.innerHTML = `<span>Receiving files...</span> <img src="icons/loader_icon.png" alt="Receiving" class="status-icon">`;
+            
+            // Show Save button, but disabled
+            statusText.style.display = 'none';
+            saveButton.style.display = 'block';
+            saveButton.disabled = true;
+            saveButton.textContent = 'Receiving...';
+
         } else if (hasFiles) {
-             // --- STATE 3: RECEIVED ---
+             // --- STATE 3: RECEIVED (Ready to Download) ---
             scanText.style.display = 'none';
-            receivingFilesList.style.display = 'none'; // Hide receiving list
-            downloadArea.style.display = 'block'; // Show download list
+            receivingFilesList.style.display = 'block'; // Show the 100% files
             qrWrapper.style.display = 'block'; 
             qrCodeContainer.classList.add('blurred'); 
             reloadIcon.style.display = 'block'; 
-            statusText.innerHTML = `<span>Received</span><img src="icons/green_checkmark.png" alt="Received" class="status-icon">`;
+            
+            // Show Save button, AND ENABLE IT
+            statusText.style.display = 'none';
+            saveButton.style.display = 'block';
+            saveButton.disabled = false;
+            saveButton.textContent = 'Save All Files';
+
         } else if (isConnected) {
             // --- STATE 1: CONNECTED ---
             scanText.style.display = 'block';
             receivingFilesList.style.display = 'none';
-            downloadArea.style.display = 'none';
             qrWrapper.style.display = 'block'; 
             qrCodeContainer.classList.add('blurred'); 
             reloadIcon.style.display = 'block'; 
+            
+            statusText.style.display = 'block';
             statusText.innerHTML = `<span>Connected</span><img src="icons/green_checkmark.png" alt="Connected" class="status-icon">`;
+            saveButton.style.display = 'none';
+
         } else {
             // --- LAUNCH SCREEN ---
             scanText.style.display = 'block';
             receivingFilesList.style.display = 'none';
-            downloadArea.style.display = 'none';
             qrWrapper.style.display = 'block'; 
             qrCodeContainer.classList.remove('blurred'); 
             reloadIcon.style.display = 'none'; 
+            
+            statusText.style.display = 'block';
             statusText.innerHTML = `<span>Waiting to connect...</span>`;
+            saveButton.style.display = 'none';
         }
     }
 
-    // --- Click Listeners ---
-    downloadArea.addEventListener('click', (event) => {
-        const targetLink = event.target.closest('.download-link');
-        if (targetLink) {
-            // NOTE: We don't preventDefault() here, so the link click works
-            const fileName = targetLink.dataset.filename;
-            const fileState = fileStates[fileName];
-            
-            if (fileState && fileState.url) {
-                // We must update the state *after* the click has been processed
-                setTimeout(() => {
-                    fileState.status = 'downloaded';
-                    updateUI();
-                }, 100);
+    // --- NEW: Click listener for the Save button (Bug Fixed) ---
+    saveButton.addEventListener('click', async () => {
+        console.log('POPUP: Save All clicked.');
+        saveButton.disabled = true;
+        saveButton.textContent = 'Zipping files...';
+
+        try {
+            // JSZip is loaded from popup.html
+            const zip = new JSZip();
+            let fileCount = 0;
+
+            for (const fileName in fileStates) {
+                const fileState = fileStates[fileName];
+                // --- THIS IS THE FIX ---
+                // We are reading the raw blob, which is allowed.
+                if (fileState.status === 'complete' && fileState.blob) {
+                    zip.file(fileName, fileState.blob);
+                    fileState.status = 'zipped'; // Mark as zipped
+                    fileCount++;
+                }
             }
+
+            if (fileCount > 0) {
+                const zipBlob = await zip.generateAsync({ type: 'blob' });
+                const zipUrl = URL.createObjectURL(zipBlob);
+                
+                const link = document.createElement('a');
+                link.href = zipUrl;
+                link.download = `RocketShare_Files.zip`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(zipUrl);
+
+                // Reload the popup to reset the session
+                window.location.reload();
+            } else {
+                console.error("No files found to zip.");
+                saveButton.textContent = 'Error - No files';
+            }
+            
+        } catch (err) {
+            console.error("Error zipping files:", err);
+            saveButton.textContent = 'Error';
+            saveButton.disabled = false;
         }
     });
 
+    // Click listener for reload icon
     reloadIcon.addEventListener('click', () => {
         window.location.reload(); // Simple reload for the popup
     });
