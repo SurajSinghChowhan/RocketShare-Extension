@@ -42,10 +42,13 @@
         <div class="session-id" id="sessionIdContainer">...</div>
     </div>
 
-    <input type="file" id="fileInput" accept="image/*,video/*" style="display: none;">
+    <!-- UPDATED: Added 'multiple' attribute -->
+    <input type="file" id="fileInput" accept="image/*,video/*" style="display: none;" multiple>
 
     <script>
-        let dataChannel; // Keep dataChannel in a broader scope
+        let dataChannel; 
+        let fileQueue = [];
+        let isSending = false;
 
         document.addEventListener('DOMContentLoaded', () => {
             const sessionIdContainer = document.getElementById('sessionIdContainer');
@@ -62,8 +65,9 @@
 
         function connectToSignaling(sessionId) {
             // --- THIS IS THE LINE YOU NEED TO UPDATE ---
-            const ipAddress = '192.168.0.8'; // UPDATE THIS WITH YOUR CURRENT IP
+            const ipAddress = '192.168.0.4'; // UPDATE THIS WITH YOUR CURRENT IP
             
+            // --- CRITICAL FIX: Changed 'aws://' back to 'ws://' ---
             const signalingServerUrl = `ws://${ipAddress}:8080`;
             const ws = new WebSocket(signalingServerUrl);
             let peerConnection;
@@ -128,37 +132,66 @@
             const fileInput = document.getElementById('fileInput');
             container.innerHTML = `
                 <h1>🚀 Connected!</h1>
-                <p>Select a file to send to your desktop.</p>
-                <button class="button" id="selectFileButton">Select Media File</button>
+                <p>Select up to 3 files to send.</p>
+                <button class="button" id="selectFileButton">Select Media Files</button>
             `;
 
             document.getElementById('selectFileButton').addEventListener('click', () => {
                 fileInput.click();
             });
 
+            // --- UPDATED: To handle multiple files ---
             fileInput.addEventListener('change', (event) => {
-                const file = event.target.files[0];
-                if (file) {
-                    container.innerHTML = `<h1>Sending...</h1><p>${file.name}</p><div id="progressText">0%</div>`;
-                    sendFile(file);
+                const files = event.target.files;
+                if (!files.length) return;
+
+                // Limit to 3 files
+                const filesToUpload = Array.from(files).slice(0, 3);
+                
+                // Add files to our queue
+                fileQueue.push(...filesToUpload);
+
+                if (!isSending) {
+                    sendNextFileFromQueue();
                 }
             });
+        }
+        
+        function sendNextFileFromQueue() {
+            if (fileQueue.length === 0) {
+                isSending = false;
+                document.getElementById('container').innerHTML = '<h1>✔️ All Files Sent!</h1><p>You can now select more files.</p>';
+                // Re-show the select button after a delay
+                setTimeout(displayFileSelectUI, 2000);
+                return;
+            }
+
+            isSending = true;
+            const file = fileQueue.shift(); // Get the next file from the queue
+            
+            if (file) {
+                document.getElementById('container').innerHTML = `<h1>Sending (${fileQueue.length + 1} left)...</h1><p>${file.name}</p><div id="progressText">0%</div>`;
+                sendFile(file);
+            }
         }
 
         function sendFile(file) {
             if (!dataChannel || dataChannel.readyState !== 'open') {
-                console.error("Data channel is not open."); return;
+                console.error("Data channel is not open."); 
+                isSending = false;
+                return;
             }
 
             const CHUNK_SIZE = 16384;
             let offset = 0;
             const progressText = document.getElementById('progressText');
 
+            // 1. Send metadata
             dataChannel.send(JSON.stringify({ type: 'metadata', name: file.name, size: file.size }));
 
             const reader = new FileReader();
             reader.onload = (e) => {
-                dataChannel.send(e.target.result);
+                dataChannel.send(e.target.result); // 2. Send chunk
                 offset += e.target.result.byteLength;
                 
                 const progress = Math.round((offset / file.size) * 100);
@@ -167,7 +200,8 @@
                 if (offset < file.size) {
                     readSlice(offset);
                 } else {
-                    document.getElementById('container').innerHTML = '<h1>✔️ File Sent!</h1><p>You can close this page.</p>';
+                    // 3. File complete, send next one
+                    sendNextFileFromQueue();
                 }
             };
             

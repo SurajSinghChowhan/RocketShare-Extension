@@ -3,6 +3,11 @@
   "name": "Rocket Share",
   "version": "0.1.0",
   "description": "A browser extension for fast, direct mobile-to-desktop media transfer.",
+  
+  "permissions": [
+    "scripting" 
+  ],
+
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
@@ -11,10 +16,27 @@
       "128": "icons/icon128.png"
     }
   },
+
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' https://cdnjs.cloudflare.com; object-src 'self' blob:"
+  },
+  
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  }
+  },
+  
+  "web_accessible_resources": [
+    {
+      "resources": [ 
+        "icons/green_checkmark.png",
+        "icons/reload_icon.png",
+        "icons/loader_icon.png",
+        "icons/download_icon.png" 
+      ],
+      "matches": [ "<all_urls>" ]
+    }
+  ]
 }
 

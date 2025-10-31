@@ -3,48 +3,207 @@
 <head>
     <meta charset="UTF-8">
     <title>Rocket Share</title>
-    <!-- Local QR Code library -->
-    <script src="qrcode.min.js"></script>
+    <!-- Local QR Code library --><script src="qrcode.min.js"></script>
+    <!-- NEW: JSZip library for creating zip files -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <style>
         body {
+            /* Using system fonts to avoid CSP issues */
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            width: 320px;
+            
+            /* --- CHANGE 1: POPUP SIZE --- */
+            width: 230px;
+            height: 350px; 
+            
             margin: 0;
+            color: white;
+            
+            /* --- ADD THESE TWO LINES FOR CURVED EDGES --- */
+            border-radius: 12px; /* You can adjust this value */
+            overflow: hidden; /* This clips the content to the rounded shape */
+
+            /* --- EXACT FIGMA GRADIENT --- */
+            background: linear-gradient(45deg, #5856D6 -25%, #00D781 125%);
+            
             text-align: center;
-            background-color: #f0f4f8;
+            /* Padding is now on the container, not the body */
+            padding: 0;
+            box-sizing: border-box;
         }
         .container {
-            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+
+            /* --- FIX: Make container fill height & push content --- */
+            height: 100%;
+            width: 100%;
+            padding: 25px 20px;
+            box-sizing: border-box;
+            justify-content: space-between;
         }
         h1 {
-            font-size: 20px;
-            color: #333;
-            margin-top: 0;
+            font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-size: 22px; 
+            font-weight: bold; 
+            margin: 0 0 10px 0;
+            letter-spacing: 0.5px;
         }
-        p {
-            color: #666;
-            font-size: 14px;
+        
+        #scan-text {
+            font-size: 16px;
+            font-weight: 500; /* Semi-bold */
+            margin: 0 0 20px 0;
+            opacity: 0.9;
+            transition: all 0.3s ease;
+        }
+
+        /* --- STYLES FOR FILE LISTS --- */
+        #receiving-files-list {
+            list-style: none;
+            padding: 0;
+            margin: 0 0 10px 0;
+            width: 100%;
+            text-align: left;
+            display: flex; 
+            flex-direction: column;
+            gap: 5px; 
+            min-height: 20px;
+        }
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 15px;
+            font-weight: 500;
+            opacity: 0.9;
+            background: rgba(255,255,255,0.1);
+            padding: 5px 8px;
+            border-radius: 6px;
+        }
+        .file-name {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 130px;
+        }
+        .file-status {
+            font-weight: 700;
+            margin-left: 8px;
+            white-space: nowrap;
+        }
+        
+        .status-icon {
+            vertical-align: middle; 
+            height: 16px; 
+            width: 16px; 
+            margin-left: 8px;
+        }
+
+        .qr-wrapper {
+            position: relative;
+            line-height: 0;
+            margin-top: 10px;
         }
         #qrcode-container {
             background: white;
             padding: 15px;
-            border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            border-radius: 15px; 
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
             display: inline-block;
+            line-height: 0;
+            transition: filter 0.3s ease; 
+        }
+        
+        .blurred {
+            filter: blur(5px);
+            opacity: 0.6;
+        }
+        .reload-icon {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            cursor: pointer;
+            z-index: 10;
+        }
+        .reload-icon img {
+            width: 48px;
+            height: 48px;
+            opacity: 0.9;
+            transition: opacity 0.2s;
+        }
+        .reload-icon img:hover {
+            opacity: 1;
+        }
+
+        /* This is for the "Waiting..." and "Connected" text */
+        .status-text {
+            font-size: 16px;
+            font-weight: 400; /* Normal */
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
             margin-top: 10px;
-            line-height: 0; /* Fix for QR code alignment */
+            margin-bottom: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        /* --- NEW: Style for the 'Save' button --- */
+        #save-button {
+            display: inline-block;
+            background-color: #ffffff;
+            color: #5856D6; 
+            border: none;
+            border-radius: 12px;
+            padding: 12px 24px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            margin-top: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            transition: all 0.2s;
+            width: 100%; /* Make it full width */
+        }
+        #save-button:disabled {
+            background-color: #f0f0f0;
+            color: #999;
+            cursor: not-allowed;
+            opacity: 0.7;
         }
     </style>
 </head>
 <body>
     <div class="container" id="container">
-        <h1>🚀 Rocket Share</h1>
-        <p>Scan the QR code with your mobile device to connect.</p>
-        <div id="qrcode-container"></div>
+        <!-- Grouped top content together -->
+        <div>
+            <h1>ROCKET SHARE</h1>
+            
+            <p id="scan-text">Scan this code with your phone camera</p>
+
+            <div id="receiving-files-list"></div>
+
+            <div class="qr-wrapper">
+                <div id="qrcode-container"></div>
+                <div id="reload-icon" class="reload-icon">
+                    <img src="icons/reload_icon.png" alt="Reload Session">
+                </div>
+            </div>
+        </div>
+        
+        <!-- This div is now the main status/action area -->
+        <div id="status-area">
+            <!-- This text will be shown/hidden by popup.js -->
+            <p class.bind="status-text" id="status-text">Waiting to connect...</p>
+            
+            <!-- This button will be shown/hidden by popup.js -->
+            <button id="save-button" class.bind="button" style="display: none;" disabled>Save</button>
+        </div>
     </div>
     
-    <!-- Main script, loaded at the end -->
-    <script src="popup.js"></script>
+    <!-- Main script, loaded at the end --><script src="popup.js"></script>
 </body>
 </html>
 

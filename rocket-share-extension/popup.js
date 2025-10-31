@@ -1,24 +1,28 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // --- Get all the UI elements ---
     const qrCodeContainer = document.getElementById('qrcode-container');
-    const container = document.getElementById('container');
+    const qrWrapper = document.querySelector('.qr-wrapper');
+    const h1 = document.querySelector('h1');
+    const scanText = document.getElementById('scan-text');
+    const statusText = document.getElementById('status-text');
+    const receivingFilesList = document.getElementById('receiving-files-list');
+    const downloadArea = document.getElementById('download-area');
+    const reloadIcon = document.getElementById('reload-icon');
 
     // --- IMPORTANT: Double-check your computer's current IP address ---
-    const ipAddress = '192.168.0.8'; // UPDATE THIS IF IT CHANGES
+    const ipAddress = '192.168.0.4'; // UPDATE THIS IF IT CHANGES
+    
     const localServerUrl = `http://${ipAddress}:8081`;
     const signalingServerUrl = `ws://${ipAddress}:8080`;
 
+    // --- ALL LOGIC IS NOW LOCAL ---
     const sessionId = crypto.randomUUID();
     const mobileUrl = `${localServerUrl}?sessionId=${sessionId}`;
 
-    new QRCode(qrCodeContainer, { text: mobileUrl, width: 190, height: 190 });
-    
-    const ws = new WebSocket(signalingServerUrl);
     let peerConnection;
     let dataChannel;
-
-    // Variables for file receiving
-    let receivedFileChunks = [];
-    let fileMetadata = {};
+    let isConnected = false;
+    const fileStates = {}; // status: 'receiving' | 'complete' | 'downloaded'
 
     const configuration = {
         iceServers: [
@@ -31,15 +35,31 @@ document.addEventListener('DOMContentLoaded', () => {
         ]
     };
 
+    // --- QR CODE GENERATION (WILL WORK NOW) ---
+    try {
+        new QRCode(qrCodeContainer, {
+            text: mobileUrl,
+            width: 120,
+            height: 120,
+        });
+        console.log('POPUP: QR Code generated for session:', sessionId);
+    } catch (e) {
+        h1.textContent = 'ERROR';
+        scanText.textContent = 'Could not generate QR Code.';
+        statusText.textContent = 'Please reload the extension.';
+        return;
+    }
+    
+    // --- WEBSOCKET & WEBRTC LOGIC (MOVED FROM SERVICE WORKER) ---
+    const ws = new WebSocket(signalingServerUrl);
+    
     ws.onopen = () => {
-        console.log('Desktop: Connected to signaling server.');
+        console.log('POPUP: Connected to signaling server.');
         ws.send(JSON.stringify({ type: 'join', sessionId }));
     };
 
     ws.onmessage = async (message) => {
         const data = JSON.parse(message.data);
-        console.log('Desktop: Received message:', data);
-
         if (data.type === 'peer-joined') {
             createPeerConnectionAndOffer();
         } else if (data.type === 'answer') {
@@ -55,50 +75,65 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function createPeerConnectionAndOffer() {
         peerConnection = new RTCPeerConnection(configuration);
-
         dataChannel = peerConnection.createDataChannel("fileChannel");
         
-        // --- THIS IS THE NEW PART ---
-        // This function handles incoming messages on the data channel
         dataChannel.onmessage = (event) => {
             try {
-                // The first message should be a JSON string with file metadata
                 const metadata = JSON.parse(event.data);
                 if (metadata.type === 'metadata') {
-                    fileMetadata = metadata;
-                    receivedFileChunks = []; // Reset for a new file transfer
-                    console.log('Desktop: Received metadata:', fileMetadata);
-                    container.innerHTML = `<h1>Receiving...</h1><p>${fileMetadata.name}</p><div id="progressText">0%</div>`;
+                    const fileName = metadata.name;
+                    fileStates[fileName] = {
+                        metadata: metadata,
+                        chunks: [],
+                        receivedSize: 0,
+                        status: 'receiving',
+                        progress: 0,
+                        url: null // Will store the final ObjectURL here
+                    };
+                    updateUI(); 
                 }
             } catch (e) {
-                // If it's not JSON, it's a raw binary file chunk (ArrayBuffer)
-                receivedFileChunks.push(event.data);
-                const receivedSize = receivedFileChunks.reduce((acc, chunk) => acc + chunk.byteLength, 0);
-                
-                const progress = Math.round((receivedSize / fileMetadata.size) * 100);
-                const progressText = document.getElementById('progressText');
-                if (progressText) progressText.textContent = `${progress}%`;
+                const chunk = event.data;
+                const activeFileKey = Object.keys(fileStates).find(key => 
+                    fileStates[key].status === 'receiving'
+                );
 
-                // When all chunks have been received
-                if (receivedSize >= fileMetadata.size) {
-                    console.log('Desktop: File received successfully!');
-                    const fileBlob = new Blob(receivedFileChunks);
-                    displayDownloadButton(fileBlob, fileMetadata.name);
+                if (activeFileKey) {
+                    const fileState = fileStates[activeFileKey];
+                    fileState.chunks.push(chunk);
+                    fileState.receivedSize += chunk.byteLength;
+                    fileState.progress = Math.round((fileState.receivedSize / fileState.metadata.size) * 100);
+
+                    if (fileState.receivedSize >= fileState.metadata.size) {
+                        const fileBlob = new Blob(fileState.chunks);
+                        fileState.status = 'complete'; 
+                        fileState.url = URL.createObjectURL(fileBlob); // Create and store the URL
+                        fileState.chunks = []; 
+                    }
+                    updateUI(); 
                 }
             }
         };
-        // -----------------------------
 
         peerConnection.onicecandidate = (event) => {
-            if (event.candidate) {
+             if (event.candidate) {
                 ws.send(JSON.stringify({ type: 'candidate', candidate: event.candidate, sessionId }));
             }
         };
 
         peerConnection.onconnectionstatechange = () => {
-            if (peerConnection.connectionState === 'connected') {
-                container.innerHTML = '<h1>🚀 Connected!</h1><p>Ready to receive files.</p>';
+            const state = peerConnection.connectionState;
+            console.log(`POPUP: Connection state changed to ${state}`);
+            
+            if (state === 'connected') {
+                isConnected = true;
+                scanText.textContent = 'Ready to receive files from your phone.';
+            } else if (state === 'disconnected' || state === 'failed') {
+                isConnected = false;
+                scanText.textContent = 'Scan this code with your phone camera';
+                Object.keys(fileStates).forEach(key => delete fileStates[key]);
             }
+            updateUI(); 
         };
 
         peerConnection.createOffer()
@@ -108,24 +143,108 @@ document.addEventListener('DOMContentLoaded', () => {
             });
     }
 
-    function displayDownloadButton(blob, fileName) {
-        const url = URL.createObjectURL(blob);
-        container.innerHTML = `
-            <h1>✔️ File Received!</h1>
-            <p>${fileName}</p>
-            <a href="${url}" download="${fileName}" class="button">Save File</a>
-        `;
-        // Add a style for the button to the head
-        const style = document.createElement('style');
-        style.innerHTML = `
-            .button { 
-                display: inline-block; background-color: #007AFF; color: white; border: none;
-                border-radius: 8px; padding: 12px 24px; font-size: 1em;
-                font-weight: 600; cursor: pointer; text-decoration: none;
-                margin-top: 10px;
+    // --- UI Rendering Function ---
+    function updateUI() {
+        receivingFilesList.innerHTML = '';
+        downloadArea.innerHTML = ''; // Clear both lists
+
+        let isReceiving = false;
+        let hasFiles = Object.keys(fileStates).length > 0;
+        
+        for (const fileName in fileStates) {
+            const file = fileStates[fileName];
+            const item = document.createElement('div');
+            item.className = 'file-item';
+            
+            if (file.status === 'receiving') {
+                isReceiving = true;
+                item.innerHTML = `
+                    <span class="file-name">${fileName}</span>
+                    <span class="file-status">${file.progress}%</span>
+                `;
+                receivingFilesList.appendChild(item);
+            } 
+            else if (file.status === 'complete') {
+                item.innerHTML = `
+                    <span class="file-name">${fileName}</span>
+                    <a class="download-link" data-filename="${fileName}" href="${file.url}" download="${fileName}">
+                        <img src="icons/download_icon.png" alt="Download" class="downloaded-icon">
+                    </a>
+                `;
+                downloadArea.appendChild(item); // Add to the download list
             }
-        `;
-        document.head.appendChild(style);
+            else if (file.status === 'downloaded') {
+                item.innerHTML = `
+                    <span class="file-name">${fileName}</span>
+                    <span class="file-status"><img src="icons/green_checkmark.png" alt="Downloaded" class="downloaded-icon"></span>
+                `;
+                downloadArea.appendChild(item); // Add to the download list
+            }
+        }
+        
+        // --- Update main status text and visibility based on what's happening ---
+        if (isReceiving) {
+            // --- STATE 2: RECEIVING ---
+            scanText.style.display = 'none';
+            receivingFilesList.style.display = 'block';
+            downloadArea.style.display = 'block'; // Show completed files too
+            qrWrapper.style.display = 'block'; 
+            qrCodeContainer.classList.add('blurred');
+            reloadIcon.style.display = 'block'; 
+            statusText.innerHTML = `<span>Receiving files...</span> <img src="icons/loader_icon.png" alt="Receiving" class="status-icon">`;
+        } else if (hasFiles) {
+             // --- STATE 3: RECEIVED ---
+            scanText.style.display = 'none';
+            receivingFilesList.style.display = 'none'; // Hide receiving list
+            downloadArea.style.display = 'block'; // Show download list
+            qrWrapper.style.display = 'block'; 
+            qrCodeContainer.classList.add('blurred'); 
+            reloadIcon.style.display = 'block'; 
+            statusText.innerHTML = `<span>Received</span><img src="icons/green_checkmark.png" alt="Received" class="status-icon">`;
+        } else if (isConnected) {
+            // --- STATE 1: CONNECTED ---
+            scanText.style.display = 'block';
+            receivingFilesList.style.display = 'none';
+            downloadArea.style.display = 'none';
+            qrWrapper.style.display = 'block'; 
+            qrCodeContainer.classList.add('blurred'); 
+            reloadIcon.style.display = 'block'; 
+            statusText.innerHTML = `<span>Connected</span><img src="icons/green_checkmark.png" alt="Connected" class="status-icon">`;
+        } else {
+            // --- LAUNCH SCREEN ---
+            scanText.style.display = 'block';
+            receivingFilesList.style.display = 'none';
+            downloadArea.style.display = 'none';
+            qrWrapper.style.display = 'block'; 
+            qrCodeContainer.classList.remove('blurred'); 
+            reloadIcon.style.display = 'none'; 
+            statusText.innerHTML = `<span>Waiting to connect...</span>`;
+        }
     }
+
+    // --- Click Listeners ---
+    downloadArea.addEventListener('click', (event) => {
+        const targetLink = event.target.closest('.download-link');
+        if (targetLink) {
+            // NOTE: We don't preventDefault() here, so the link click works
+            const fileName = targetLink.dataset.filename;
+            const fileState = fileStates[fileName];
+            
+            if (fileState && fileState.url) {
+                // We must update the state *after* the click has been processed
+                setTimeout(() => {
+                    fileState.status = 'downloaded';
+                    updateUI();
+                }, 100);
+            }
+        }
+    });
+
+    reloadIcon.addEventListener('click', () => {
+        window.location.reload(); // Simple reload for the popup
+    });
+
+    // Initial UI render on load
+    updateUI();
 });
 
